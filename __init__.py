@@ -36,7 +36,7 @@ from .pyopenvdb import pyopenvdb as vdb
 bl_info = {
     "name": "Export Shader as OpenVDB",
     "author": "Joshua Blömer",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (2, 90, 0),
     "location": "File > Export > OpenVDB (.vdb)",
     "description": "",
@@ -57,10 +57,10 @@ def safe_mod(a, b):
     return math.fmod(a, b) if b != 0 else 0
 
 def safe_divide(a, b):
-    return a/b if b != 0 else b
+    return a / b if b != 0 else b
 
 def vec_divide(a, b):
-    return Vector([c/d if d != 0 else 0 for c, d in zip(a, b)])
+    return Vector([c / d if d != 0 else 0 for c, d in zip(a, b)])
 
 
 def clamp(x, lower, upper):
@@ -346,6 +346,9 @@ class ExportVDB(bpy.types.Operator, ExportHelper):
     filename_ext = ".vdb"
     voxel_count: IntProperty(default=20)
     clamp_negative: BoolProperty(default=False, description='Clamps Negative Density Values to 0')
+    render_animation: BoolProperty(default=False)
+    start_frame: IntProperty(default=1)
+    end_frame: IntProperty(default=250)
 
     @classmethod
     def poll(cls, context):
@@ -365,28 +368,47 @@ class ExportVDB(bpy.types.Operator, ExportHelper):
             'Material Output')
         volume_in = out.inputs[1]
         volume_node = volume_in.links[0].from_node
-        i = 0
-        grid = vdb.FloatGrid()
-        grid.name = 'density'
-        accessor = grid.getAccessor()
+       
         clamp_negative = self.clamp_negative
+
+        start_frame = self.start_frame if self.render_animation else context.scene.frame_current
+        end_frame  = (self.end_frame +1) if self.render_animation else (context.scene.frame_current + 1)
+
+
+
+
+        
         if len(volume_node.inputs['Density'].links) != 0:
             node_index_list = list(
                 context.object.data.materials[0].node_tree.nodes)
             first_node = volume_node.inputs['Density'].links[0].from_node
-            nodes = get_nodes(first_node)
+            
+            for j in range(start_frame, end_frame):
+                i = 0
+                context.scene.frame_set(j)
+                context.view_layer.update() 
+                grid = vdb.FloatGrid()
+                grid.name = 'density'
+                accessor = grid.getAccessor()
+                nodes = get_nodes(first_node)
+                for x in range(-voxel_count, voxel_count):
+                    for y in range(-voxel_count, voxel_count):
+                        for z in range(-voxel_count, voxel_count):
+                            results = [None for _ in range(
+                                len(context.object.data.materials[0].node_tree.nodes))]
+                            result = evaluate(
+                                nodes, (x/voxel_count, y/voxel_count, z/voxel_count))[0]
+                            accessor.setValueOn((x, y, z), result * (not clamp_negative) + (max(0,result) * clamp_negative))
+                            i += 1
+                            update_progress("Exporting", i/(voxel_count*2)**3)
+                grid.transform.scale((1/voxel_count, 1/voxel_count, 1/voxel_count))
+                vdb.write(self.filepath.split(".")[0]+("_"+str(j))*self.render_animation+".vdb", grids=[grid])
 
-            for x in range(-voxel_count, voxel_count):
-                for y in range(-voxel_count, voxel_count):
-                    for z in range(-voxel_count, voxel_count):
-                        results = [None for _ in range(
-                            len(context.object.data.materials[0].node_tree.nodes))]
-                        result = evaluate(
-                            nodes, (x/voxel_count, y/voxel_count, z/voxel_count))[0]
-                        accessor.setValueOn((x, y, z), result * (not clamp_negative) + (max(0,result) * clamp_negative))
-                        i += 1
-                        update_progress("Exporting", i/(voxel_count*2)**3)
         else:
+            i = 0
+            grid = vdb.FloatGrid()
+            grid.name = 'density'
+            accessor = grid.getAccessor()
             value = volume_node.inputs['Density'].default_value
             for x in range(-voxel_count, voxel_count):
                 for y in range(-voxel_count, voxel_count):
@@ -394,11 +416,12 @@ class ExportVDB(bpy.types.Operator, ExportHelper):
                         accessor.setValueOn((x, y, z), value * (not clamp_negative) + (max(0,value) * clamp_negative))
                         i += 1
                         update_progress("Exporting", i/(voxel_count*2)**3)
-
-        grid.transform.scale((1/voxel_count, 1/voxel_count, 1/voxel_count))
+            grid.transform.scale((1/voxel_count, 1/voxel_count, 1/voxel_count))
+            for j in range(start_frame, end_frame):
+                vdb.write(self.filepath.split(".")[0]+("_"+str(j))*self.render_animation+".vdb", grids=[grid])
+        
         stoptime = time.perf_counter()
         print("Finished in ", stoptime-starttime, " seconds")
-        vdb.write(self.filepath, grids=[grid])
         return {'FINISHED'}
 
 
@@ -426,6 +449,13 @@ class VDB_PT_export_main(bpy.types.Panel):
         col = layout.column(align=True)
         col.prop(operator, "voxel_count", text="Voxel Count:")
         col.prop(operator, "clamp_negative", text="Clamp Negative")
+        col.prop(operator, "render_animation", text="Animation")
+        start = col.row() 
+        start.prop(operator, "start_frame", text="Start")
+        start.active = operator.render_animation
+        end = col.row()
+        end.prop(operator, "end_frame", text="End")
+        end.active = operator.render_animation
 
 
 def menu_func_export(self, context):
@@ -454,3 +484,4 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
